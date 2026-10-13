@@ -5,7 +5,8 @@
 Подготовлены PostgreSQL-таблицы `telegram_bot_sessions` для состояния диалога и `telegram_updates`
 для надёжного приёма входящих обновлений. Webhook подключён к основной web-композиции с настоящим
 атомарным inbox/outbox acceptor. Доменная модель сессии защищает переходы демонстрационного диалога,
-черновик и интерактивную ревизию. Её сохранение и подключение к обработке обновлений,
+черновик и интерактивную ревизию. Для сессии подготовлены внутренний контракт хранения и строгий
+PostgreSQL mapper. Работающий репозиторий, подключение сессии к обработке обновлений,
 production-обработка и отправка сообщений ещё не реализованы.
 
 ## Доменная сессия
@@ -32,8 +33,37 @@ UUID профиля не импортирует типы Users и не подт�
 
 Допустимые `CATALOG` и `LEAD_REPLY` восстанавливаются, но демо-операции возвращают
 `UNSUPPORTED_MODE` или `UNSUPPORTED_FLOW` без изменения данных. Настоящая заявка не создаётся.
-Persistence mapping, репозиторий, Application orchestration и Telegram delivery сессии пока отсутствуют;
+Репозиторий, Application orchestration и Telegram delivery сессии пока отсутствуют;
 интерактивная ревизия не заменяет блокировки, `lock_version` или дедупликацию inbox.
+
+## Контракт хранения и mapping сессии
+
+[ITelegramBotSessionRepository](../../../modules/telegram/application/port/ITelegramBotSessionRepository.php)
+— внутренний write-side порт Telegram с операциями `createIfAbsent`, `loadForUpdate` и `save`.
+Он описывает работу в активной транзакции вызывающего сценария на том же соединении, без собственного
+commit, rollback или retry. SQL-адаптер и production DI для этого порта ещё не реализованы.
+
+[VersionedTelegramBotSession](../../../modules/telegram/application/dto/VersionedTelegramBotSession.php)
+содержит доменную сессию и загруженный `lock_version`, который не меняется при доменном переходе.
+[TelegramSessionCreationResult](../../../modules/telegram/application/dto/TelegramSessionCreationResult.php)
+различает созданную и существующую сессию; признак создания не подтверждает commit или доставку.
+
+[TelegramBotSessionMapper](../../../modules/telegram/infrastructure/mapper/TelegramBotSessionMapper.php)
+проверяет наличие всех 14 полей строки и различает отсутствующее поле и допустимый `null`.
+UUID, enum, bigint и timestamps преобразуются строго, без потери точности и автоматического исправления дат.
+Mapper сохраняет nullable-ссылки, `CATALOG`/`LEAD_REPLY`, точный текст и UTC-микросекунды,
+не очищает просроченный черновик, не продлевает TTL и не выполняет запросов или переходов.
+Массивы строки и параметров остаются в Infrastructure.
+
+Вставка содержит 14 явных полей. Изменение содержит только `flow_code`, `content_subject_id`,
+`draft_comment`, `expires_at` и `interaction_revision`; очистка передаёт оба draft-поля как `null`.
+Техническое увеличение `lock_version` и изменение `updated_at` остаются обязанностью будущего репозитория.
+Ошибки преобразования возвращаются как
+[TelegramSessionPersistenceException](../../../modules/telegram/application/exception/TelegramSessionPersistenceException.php)
+с закрытым [кодом](../../../modules/telegram/application/enum/TelegramSessionPersistenceErrorCode.php):
+`INVALID_RECORD` при чтении, `INVALID_ARGUMENT` при неверном времени записи.
+Исходная доменная причина сохраняется внутренне и не предназначена для внешнего вывода или логирования.
+Блокировки, конкурентное создание и optimistic save этим mapping не реализованы.
 
 ## HTTP-граница webhook
 
@@ -148,8 +178,8 @@ Telegram владеет состоянием диалога и inbox входя�
 - `interaction_revision` и `lock_version` неотрицательны, начинаются с нуля и имеют разные назначения.
 - `content_subject_id` не является физическим FK или источником подтверждённого показа идеи.
 - `agency_lead_id` — nullable UUID без FK в текущей реализации.
-- Технические времена создания и изменения получают начальное значение от PostgreSQL.
-  Последующие записи должны явно обновлять `updated_at`.
+- Миграция задаёт defaults технических времён; mapper при вставке передаёт явные UTC `created_at` и `updated_at`.
+  Последующие изменения `updated_at` относятся к будущему репозиторию.
 
 Миграция не реализует увеличение ревизий, optimistic locking, истечение срока черновика или проверку доступа к заявке.
 Эта миграция не реализует Application-сценарии, HTTP endpoints, workers, Redis-ключи и внешние адаптеры.
@@ -192,12 +222,21 @@ docker compose exec -T -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=
 
 [Domain-тесты](../../../tests/unit/modules/telegram/domain) проверяют создание, восстановление,
 переходы, отказы, границы TTL и ревизии. [Архитектурный тест](../../../tests/unit/modules/telegram/TelegramArchitectureTest.php)
-проверяет зависимости Domain и запрещённые обращения к окружению, часам, случайности и файловому I/O.
+проверяет зависимости Domain и запрещённые обращения к окружению, часам, случайности и файловому I/O,
+а также границы Application и отсутствие импортов Users/Core/Platform в mapper сессии.
 После пересборки application image в настроенном тестовом окружении:
 
 ```bash
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run unit tests/unit/modules/telegram/domain --no-colors
 ```
+
+[Contract-тест](../../../tests/unit/modules/telegram/application/TelegramSessionPersistenceContractTest.php)
+и [unit-тест mapper](../../../tests/unit/modules/telegram/infrastructure/mapper/TelegramBotSessionMapperTest.php)
+проверяют версии, безопасные ошибки, строгое восстановление и наборы параметров записи.
+[PostgreSQL mapping-тест](../../../tests/integration/modules/telegram/infrastructure/TelegramBotSessionMappingTest.php)
+проверяет реальный round-trip, bigint, UTC-микросекунды, reserved states и очистку черновика
+с сохранением исключённых из UPDATE полей. Синтетические строки и настройки `SET LOCAL`
+откатываются тестовой транзакцией. Это не проверка ещё отсутствующего репозитория и его конкурентной записи.
 
 [Functional-тест](../../../tests/functional/modules/telegram/WebhookCest.php) использует настоящий web config
 и fragment с test-only acceptor: проверяет HTTP gates, receipt, отсутствие побочных эффектов,
