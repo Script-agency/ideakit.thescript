@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace modules\telegram\domain\entity;
 
+use DateTimeImmutable;
 use modules\telegram\domain\enum\TelegramContentMode;
 use modules\telegram\domain\enum\TelegramSessionFlow;
+use modules\telegram\domain\enum\TelegramSessionTransitionOutcome;
 use modules\telegram\domain\exception\TelegramSessionStateViolationException;
 use modules\telegram\domain\valueObject\TelegramBotSessionId;
 use modules\telegram\domain\valueObject\TelegramInteractionRevision;
 use modules\telegram\domain\valueObject\TelegramSessionDraft;
+use modules\telegram\domain\valueObject\TelegramSessionTransitionResult;
 
 final class TelegramBotSession
 {
@@ -101,6 +104,143 @@ final class TelegramBotSession
         );
     }
 
+    /** @throws TelegramSessionStateViolationException */
+    public function beginOrder(string $orderSubjectId): TelegramSessionTransitionResult
+    {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+        if ($this->flow !== TelegramSessionFlow::BROWSING) {
+            return $this->result(TelegramSessionTransitionOutcome::INVALID_STATE);
+        }
+
+        $subject = self::normalizeReference($orderSubjectId);
+        $revision = $this->interactionRevision->next();
+        $result = new TelegramSessionTransitionResult(
+            TelegramSessionTransitionOutcome::APPLIED,
+            TelegramSessionFlow::AWAITING_LEAD_COMMENT,
+            $revision,
+        );
+
+        $this->contentSubjectId = $subject;
+        $this->flow = TelegramSessionFlow::AWAITING_LEAD_COMMENT;
+        $this->interactionRevision = $revision;
+
+        return $result;
+    }
+
+    /** @throws TelegramSessionStateViolationException */
+    public function acceptComment(string $text, DateTimeImmutable $now): TelegramSessionTransitionResult
+    {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+        if ($this->flow !== TelegramSessionFlow::AWAITING_LEAD_COMMENT) {
+            return $this->result(TelegramSessionTransitionOutcome::INVALID_STATE);
+        }
+
+        $draft = TelegramSessionDraft::tryCreate($text, $now);
+        if ($draft === null) {
+            return $this->result(TelegramSessionTransitionOutcome::INVALID_COMMENT);
+        }
+        $revision = $this->interactionRevision->next();
+        $result = new TelegramSessionTransitionResult(
+            TelegramSessionTransitionOutcome::APPLIED,
+            TelegramSessionFlow::AWAITING_LEAD_CONFIRMATION,
+            $revision,
+        );
+
+        $this->draft = $draft;
+        $this->flow = TelegramSessionFlow::AWAITING_LEAD_CONFIRMATION;
+        $this->interactionRevision = $revision;
+
+        return $result;
+    }
+
+    /** @throws TelegramSessionStateViolationException */
+    public function confirmOrder(
+        TelegramInteractionRevision $expectedRevision,
+        DateTimeImmutable $now,
+        ?string $browsingSubjectId,
+    ): TelegramSessionTransitionResult {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+        if (!$this->interactionRevision->equals($expectedRevision)) {
+            return $this->result(TelegramSessionTransitionOutcome::STALE_REVISION);
+        }
+        if ($this->flow !== TelegramSessionFlow::AWAITING_LEAD_CONFIRMATION || $this->draft === null) {
+            return $this->result(TelegramSessionTransitionOutcome::INVALID_STATE);
+        }
+
+        $expired = $this->draft->isExpiredAt($now);
+        $subject = self::normalizeReference($browsingSubjectId);
+
+        return $this->finishBrowsing(
+            $subject,
+            $expired ? TelegramSessionTransitionOutcome::DRAFT_EXPIRED : TelegramSessionTransitionOutcome::APPLIED,
+        );
+    }
+
+    /** @throws TelegramSessionStateViolationException */
+    public function cancelInline(
+        TelegramInteractionRevision $expectedRevision,
+        ?string $browsingSubjectId,
+    ): TelegramSessionTransitionResult {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+        if (!$this->interactionRevision->equals($expectedRevision)) {
+            return $this->result(TelegramSessionTransitionOutcome::STALE_REVISION);
+        }
+
+        return $this->cancelCurrentOrder($browsingSubjectId);
+    }
+
+    /** @throws TelegramSessionStateViolationException */
+    public function cancelCurrentOrder(?string $browsingSubjectId): TelegramSessionTransitionResult
+    {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+        if ($this->flow === TelegramSessionFlow::BROWSING) {
+            return $this->result(TelegramSessionTransitionOutcome::NO_CHANGE);
+        }
+
+        return $this->finishBrowsing(self::normalizeReference($browsingSubjectId), TelegramSessionTransitionOutcome::APPLIED);
+    }
+
+    /** @throws TelegramSessionStateViolationException */
+    public function restartBrowsing(?string $browsingSubjectId): TelegramSessionTransitionResult
+    {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+
+        return $this->finishBrowsing(self::normalizeReference($browsingSubjectId), TelegramSessionTransitionOutcome::APPLIED);
+    }
+
+    /** @throws TelegramSessionStateViolationException */
+    public function expireDraft(DateTimeImmutable $now, ?string $browsingSubjectId): TelegramSessionTransitionResult
+    {
+        if (($unsupported = $this->unsupportedResult()) !== null) {
+            return $unsupported;
+        }
+        if ($this->draft === null) {
+            return $this->result(TelegramSessionTransitionOutcome::NO_CHANGE);
+        }
+        if (!$this->draft->isExpiredAt($now)) {
+            return $this->result(TelegramSessionTransitionOutcome::NO_CHANGE);
+        }
+
+        return $this->finishBrowsing(self::normalizeReference($browsingSubjectId), TelegramSessionTransitionOutcome::DRAFT_EXPIRED);
+    }
+
+    public function canBrowseNext(): bool
+    {
+        return $this->contentMode === TelegramContentMode::DEMO && $this->flow === TelegramSessionFlow::BROWSING;
+    }
+
     public function getId(): TelegramBotSessionId
     {
         return $this->id;
@@ -149,6 +289,36 @@ final class TelegramBotSession
     public function getInteractionRevision(): TelegramInteractionRevision
     {
         return $this->interactionRevision;
+    }
+
+    private function unsupportedResult(): ?TelegramSessionTransitionResult
+    {
+        if ($this->contentMode !== TelegramContentMode::DEMO) {
+            return $this->result(TelegramSessionTransitionOutcome::UNSUPPORTED_MODE);
+        }
+        if ($this->flow === TelegramSessionFlow::LEAD_REPLY) {
+            return $this->result(TelegramSessionTransitionOutcome::UNSUPPORTED_FLOW);
+        }
+
+        return null;
+    }
+
+    private function result(TelegramSessionTransitionOutcome $outcome): TelegramSessionTransitionResult
+    {
+        return new TelegramSessionTransitionResult($outcome, $this->flow, $this->interactionRevision);
+    }
+
+    private function finishBrowsing(?string $browsingSubjectId, TelegramSessionTransitionOutcome $outcome): TelegramSessionTransitionResult
+    {
+        $revision = $this->interactionRevision->next();
+        $result = new TelegramSessionTransitionResult($outcome, TelegramSessionFlow::BROWSING, $revision);
+
+        $this->flow = TelegramSessionFlow::BROWSING;
+        $this->contentSubjectId = $browsingSubjectId;
+        $this->draft = null;
+        $this->interactionRevision = $revision;
+
+        return $result;
     }
 
     private static function normalizeReference(?string $id): ?string
