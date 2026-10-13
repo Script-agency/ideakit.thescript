@@ -124,6 +124,12 @@ final class TelegramBotSessionMapper
         ];
     }
 
+    /** @throws TelegramSessionPersistenceException */
+    public function toTimestampParameter(DateTimeImmutable $time): string
+    {
+        return $this->writeTime($time);
+    }
+
     private function string(mixed $value): string
     {
         if (!is_string($value)) {

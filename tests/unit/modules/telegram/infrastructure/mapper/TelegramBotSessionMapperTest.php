@@ -241,6 +241,23 @@ final class TelegramBotSessionMapperTest extends Unit
         ], $mapper->toUpdateParameters($session));
     }
 
+    public function testFormatsRepositoryTimestampWithoutLosingMicroseconds(): void
+    {
+        $time = new DateTimeImmutable('2026-10-13T10:00:00.654321', new DateTimeZone('UTC'));
+        self::assertSame(
+            '2026-10-13T10:00:00.654321+00:00',
+            (new TelegramBotSessionMapper())->toTimestampParameter($time),
+        );
+    }
+
+    /** @dataProvider invalidWriteTimes */
+    public function testRejectsInvalidRepositoryTimestamp(string $time, string $zone): void
+    {
+        $this->expectException(TelegramSessionPersistenceException::class);
+        $this->expectExceptionMessage('telegram_session_invalid_argument');
+        (new TelegramBotSessionMapper())->toTimestampParameter(new DateTimeImmutable($time, new DateTimeZone($zone)));
+    }
+
     /** @dataProvider invalidWriteTimes */
     public function testRejectsInvalidWriteTime(string $time, string $zone): void
     {
