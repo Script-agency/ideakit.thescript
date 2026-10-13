@@ -4,8 +4,36 @@
 
 Подготовлены PostgreSQL-таблицы `telegram_bot_sessions` для состояния диалога и `telegram_updates`
 для надёжного приёма входящих обновлений. Webhook подключён к основной web-композиции с настоящим
-атомарным inbox/outbox acceptor. Production-обработка принятых обновлений, управление диалогом
-и отправка сообщений ещё не реализованы.
+атомарным inbox/outbox acceptor. Доменная модель сессии защищает переходы демонстрационного диалога,
+черновик и интерактивную ревизию. Её сохранение и подключение к обработке обновлений,
+production-обработка и отправка сообщений ещё не реализованы.
+
+## Доменная сессия
+
+[TelegramBotSession](../../../modules/telegram/domain/entity/TelegramBotSession.php) принадлежит Telegram
+и зависит только от PHP и локальных доменных типов. Идентификаторы и время передаются явно;
+UUID профиля не импортирует типы Users и не подтверждает право доступа.
+`createDemo` создаёт `DEMO/BROWSING` с ревизией 0. `restore` проверяет состояние, но не выполняет
+переходов и не очищает просроченный черновик.
+
+Модель поддерживает начало оформления, принятие комментария, подтверждение, inline-отмену
+с проверкой ревизии, отмену текущего оформления, перезапуск и явное истечение черновика.
+Навигация разрешена только в `DEMO/BROWSING` и сама состояние не меняет.
+Каждый применённый переход увеличивает `interaction_revision` ровно один раз, включая повторный
+перезапуск в `BROWSING`. Устаревшее действие отклоняется до проверки срока и не очищает черновик;
+переполнение и некорректные аргументы не оставляют частично изменённую сущность.
+
+[Черновик](../../../modules/telegram/domain/valueObject/TelegramSessionDraft.php) объединяет текст
+и срок: максимум 2000 Unicode-символов после нормализации CR/LF и удаления остальных управляющих
+символов `Cc`; ровно 24 часа от принятия комментария, UTC с сохранением микросекунд.
+При актуальном просроченном подтверждении черновик очищается с результатом `DRAFT_EXPIRED`,
+который, как и `APPLIED`, требует сохранения. Неизменяемый результат не содержит комментарий.
+Возврат к просмотру использует явно переданный subject, включая `null`, без подстановки subject заказа.
+
+Допустимые `CATALOG` и `LEAD_REPLY` восстанавливаются, но демо-операции возвращают
+`UNSUPPORTED_MODE` или `UNSUPPORTED_FLOW` без изменения данных. Настоящая заявка не создаётся.
+Persistence mapping, репозиторий, Application orchestration и Telegram delivery сессии пока отсутствуют;
+интерактивная ревизия не заменяет блокировки, `lock_version` или дедупликацию inbox.
 
 ## HTTP-граница webhook
 
@@ -161,6 +189,15 @@ docker compose exec -T -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=
 не используйте `fresh` или общий откат для рабочей базы.
 
 ## Проверки
+
+[Domain-тесты](../../../tests/unit/modules/telegram/domain) проверяют создание, восстановление,
+переходы, отказы, границы TTL и ревизии. [Архитектурный тест](../../../tests/unit/modules/telegram/TelegramArchitectureTest.php)
+проверяет зависимости Domain и запрещённые обращения к окружению, часам, случайности и файловому I/O.
+После пересборки application image в настроенном тестовом окружении:
+
+```bash
+docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run unit tests/unit/modules/telegram/domain --no-colors
+```
 
 [Functional-тест](../../../tests/functional/modules/telegram/WebhookCest.php) использует настоящий web config
 и fragment с test-only acceptor: проверяет HTTP gates, receipt, отсутствие побочных эффектов,
