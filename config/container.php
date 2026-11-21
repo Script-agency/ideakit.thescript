@@ -49,6 +49,14 @@ use modules\platform\application\route\OutboxRouteRegistry;
 use modules\platform\application\route\OutboxRoute;
 use modules\telegram\infrastructure\messaging\TelegramUpdateReceivedPayloadCodec;
 use modules\telegram\application\exception\TelegramUpdateAcceptanceIntegrityException;
+use modules\telegram\application\enum\TelegramSessionPersistenceErrorCode;
+use modules\telegram\application\exception\TelegramSessionPersistenceException;
+use modules\telegram\application\port\ITelegramBotSessionRepository;
+use modules\telegram\application\port\ITelegramSessionClock;
+use modules\telegram\infrastructure\db\DbTelegramBotSessionRepository;
+use modules\telegram\infrastructure\db\TelegramSessionDbFailure;
+use modules\telegram\infrastructure\mapper\TelegramBotSessionMapper;
+use modules\telegram\infrastructure\time\SystemTelegramSessionClock;
 use modules\telegram\application\handler\AcceptTelegramUpdateHandler;
 use modules\telegram\application\port\IAcceptTelegramUpdate;
 use modules\telegram\application\port\ITelegramAcceptanceClock;
@@ -221,6 +229,24 @@ $container->set(IAcceptTelegramUpdate::class, static function () use ($container
         $container->get(ITelegramInboxTransactionRunner::class),
         $container->get(IOutboxWriter::class),
         $container->get(ITelegramAcceptanceIdGenerator::class),
+    );
+});
+
+// ---------- Telegram session persistence ----------
+$container->set(ITelegramSessionClock::class, SystemTelegramSessionClock::class);
+$container->set(TelegramBotSessionMapper::class);
+$container->set(TelegramSessionDbFailure::class);
+$container->set(ITelegramBotSessionRepository::class, static function () use ($container): ITelegramBotSessionRepository {
+    $db = Yii::$app->get('db');
+    if (!$db instanceof Connection) {
+        throw new TelegramSessionPersistenceException(TelegramSessionPersistenceErrorCode::STORAGE_FAILURE);
+    }
+
+    return new DbTelegramBotSessionRepository(
+        $db,
+        $container->get(TelegramBotSessionMapper::class),
+        $container->get(ITelegramSessionClock::class),
+        $container->get(TelegramSessionDbFailure::class),
     );
 });
 

@@ -6,7 +6,7 @@
 для надёжного приёма входящих обновлений. Webhook подключён к основной web-композиции с настоящим
 атомарным inbox/outbox acceptor. Доменная модель сессии защищает переходы демонстрационного диалога,
 черновик и интерактивную ревизию. Для сессии подготовлены внутренний контракт хранения и строгий
-PostgreSQL mapper. Работающий репозиторий, подключение сессии к обработке обновлений,
+PostgreSQL mapper и репозиторий с ленивым web/console DI. Подключение сессии к обработке обновлений,
 production-обработка и отправка сообщений ещё не реализованы.
 
 ## Доменная сессия
@@ -33,7 +33,7 @@ UUID профиля не импортирует типы Users и не подт�
 
 Допустимые `CATALOG` и `LEAD_REPLY` восстанавливаются, но демо-операции возвращают
 `UNSUPPORTED_MODE` или `UNSUPPORTED_FLOW` без изменения данных. Настоящая заявка не создаётся.
-Репозиторий, Application orchestration и Telegram delivery сессии пока отсутствуют;
+Application orchestration и Telegram delivery сессии пока отсутствуют;
 интерактивная ревизия не заменяет блокировки, `lock_version` или дедупликацию inbox.
 
 ## Контракт хранения и mapping сессии
@@ -41,7 +41,7 @@ UUID профиля не импортирует типы Users и не подт�
 [ITelegramBotSessionRepository](../../../modules/telegram/application/port/ITelegramBotSessionRepository.php)
 — внутренний write-side порт Telegram с операциями `createIfAbsent`, `loadForUpdate` и `save`.
 Он описывает работу в активной транзакции вызывающего сценария на том же соединении, без собственного
-commit, rollback или retry. SQL-адаптер и production DI для этого порта ещё не реализованы.
+commit, rollback или retry. Порт подключён к PostgreSQL-адаптеру в общей web/console-композиции.
 
 [VersionedTelegramBotSession](../../../modules/telegram/application/dto/VersionedTelegramBotSession.php)
 содержит доменную сессию и загруженный `lock_version`, который не меняется при доменном переходе.
@@ -57,13 +57,37 @@ Mapper сохраняет nullable-ссылки, `CATALOG`/`LEAD_REPLY`, точ�
 
 Вставка содержит 14 явных полей. Изменение содержит только `flow_code`, `content_subject_id`,
 `draft_comment`, `expires_at` и `interaction_revision`; очистка передаёт оба draft-поля как `null`.
-Техническое увеличение `lock_version` и изменение `updated_at` остаются обязанностью будущего репозитория.
+Техническое увеличение `lock_version` и изменение `updated_at` выполняет репозиторий.
 Ошибки преобразования возвращаются как
 [TelegramSessionPersistenceException](../../../modules/telegram/application/exception/TelegramSessionPersistenceException.php)
 с закрытым [кодом](../../../modules/telegram/application/enum/TelegramSessionPersistenceErrorCode.php):
 `INVALID_RECORD` при чтении, `INVALID_ARGUMENT` при неверном времени записи.
 Исходная доменная причина сохраняется внутренне и не предназначена для внешнего вывода или логирования.
 Блокировки, конкурентное создание и optimistic save этим mapping не реализованы.
+
+## PostgreSQL-репозиторий сессии
+
+[DbTelegramBotSessionRepository](../../../modules/telegram/infrastructure/db/DbTelegramBotSessionRepository.php)
+работает только с `telegram_bot_sessions`. `createIfAbsent` создаёт начальную сессию либо блокирует
+существующую пару bot/chat без сброса диалога и смены владельца. `loadForUpdate` загружает сессию
+под row lock; только отсутствие возвращает `null`. `save` проверяет владельца, неизменяемые поля
+и ожидаемую storage version до сравнения изменяемого состояния.
+
+Вызывающий сценарий владеет активными Yii/PDO-транзакциями: READ COMMITTED, read-write, ISO и UTC.
+Он задаёт через `SET LOCAL` положительный `lock_timeout` не более 2 секунд и `statement_timeout`
+больше lock timeout, но не более 5 секунд. Репозиторий проверяет контекст каждого вызова,
+не исправляет настройки, не открывает транзакцию и не выполняет commit, rollback или retry.
+Успешный результат ещё не подтверждает commit или доставку сообщения.
+
+Изменение увеличивает `lock_version` один раз; no-change сохраняет версию, timestamps и физическую
+строку без UPDATE и вызова часов. Устаревшая версия отклоняется и для no-change. Максимальная версия
+допускает чтение/no-change, но изменение даёт `VERSION_OVERFLOW`. `interaction_revision` независима
+от storage version; expired draft сохраняется при чтении и очищается только явным Domain-переходом.
+
+Ошибки имеют закрытые коды; DB-причина сохраняется только внутренне. Локальная DAO-команда
+исключает SQL logging/profiling и query cache, не меняя общие флаги соединения.
+[DI](../../../config/container.php) получает текущее application db при каждом разрешении порта;
+создание адаптера не открывает соединение и не требует webhook secret или брокера.
 
 ## HTTP-граница webhook
 
@@ -179,7 +203,7 @@ Telegram владеет состоянием диалога и inbox входя�
 - `content_subject_id` не является физическим FK или источником подтверждённого показа идеи.
 - `agency_lead_id` — nullable UUID без FK в текущей реализации.
 - Миграция задаёт defaults технических времён; mapper при вставке передаёт явные UTC `created_at` и `updated_at`.
-  Последующие изменения `updated_at` относятся к будущему репозиторию.
+  При изменении репозиторий записывает явный UTC `updated_at`.
 
 Миграция не реализует увеличение ревизий, optimistic locking, истечение срока черновика или проверку доступа к заявке.
 Эта миграция не реализует Application-сценарии, HTTP endpoints, workers, Redis-ключи и внешние адаптеры.
@@ -236,7 +260,14 @@ docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=
 [PostgreSQL mapping-тест](../../../tests/integration/modules/telegram/infrastructure/TelegramBotSessionMappingTest.php)
 проверяет реальный round-trip, bigint, UTC-микросекунды, reserved states и очистку черновика
 с сохранением исключённых из UPDATE полей. Синтетические строки и настройки `SET LOCAL`
-откатываются тестовой транзакцией. Это не проверка ещё отсутствующего репозитория и его конкурентной записи.
+откатываются тестовой транзакцией.
+
+Репозиторий проверяют отдельные PostgreSQL-наборы: [операции и версии](../../../tests/integration/modules/telegram/infrastructure/DbTelegramBotSessionRepositoryTest.php),
+[конкурентные процессы](../../../tests/integration/modules/telegram/infrastructure/DbTelegramBotSessionConcurrencyTest.php)
+и [storage boundaries](../../../tests/integration/modules/telegram/infrastructure/TelegramSessionStorageBoundaryTest.php).
+[Session DI-тест](../../../tests/integration/config/TelegramSessionContainerBindingsTest.php) проверяет
+текущий application db, caller rollback и ленивые web/console bootstrap в отдельных процессах.
+Архитектурный gate проверяет отсутствие импортов чужих модулей в session persistence-компонентах.
 
 [Functional-тест](../../../tests/functional/modules/telegram/WebhookCest.php) использует настоящий web config
 и fragment с test-only acceptor: проверяет HTTP gates, receipt, отсутствие побочных эффектов,
@@ -255,6 +286,8 @@ PostgreSQL-тесты [приёма](../../../tests/integration/modules/telegram
 ```bash
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run functional tests/functional/modules/telegram --no-colors
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/config/TelegramAcceptanceContainerBindingsTest.php --no-colors
+
+docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/config/TelegramSessionContainerBindingsTest.php --no-colors
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/modules/telegram/infrastructure --no-colors
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run unit tests/unit/modules/telegram --no-colors
 ```

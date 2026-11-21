@@ -37,17 +37,32 @@ final class TelegramArchitectureTest extends Unit
         self::assertSame([], $violations);
     }
 
+    public function testSessionPersistenceDoesNotImportOtherModuleInternals(): void
+    {
+        self::assertSame([], $this->violations(
+            dirname(__DIR__, 4) . '/modules/telegram/infrastructure/db',
+            ['core\\', 'modules\\users\\', 'modules\\platform\\'],
+            [
+                'DbTelegramBotSessionRepository.php', 'TelegramSessionDbFailure.php', 'TelegramSessionDbCommand.php',
+            ],
+        ));
+    }
+
     /**
      * @param list<string> $prefixes
+     * @param list<string> $filenames
      * @return list<string>
      */
-    private function violations(string $directory, array $prefixes): array
+    private function violations(string $directory, array $prefixes, array $filenames = []): array
     {
         $violations = [];
         $isDomain = str_ends_with($directory, '/domain');
         $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, RecursiveDirectoryIterator::SKIP_DOTS));
         foreach ($files as $file) {
             if (!$file instanceof SplFileInfo || !$file->isFile() || $file->getExtension() !== 'php') {
+                continue;
+            }
+            if ($filenames !== [] && !in_array($file->getFilename(), $filenames, true)) {
                 continue;
             }
             $source = file_get_contents($file->getPathname());

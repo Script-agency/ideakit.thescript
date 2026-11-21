@@ -12,6 +12,9 @@ use modules\telegram\domain\entity\TelegramBotSession;
 /**
  * Internal Telegram write-side port. Every operation requires an active caller-owned
  * transaction on the same connection; it never begins, commits, rolls back or retries it.
+ * Both framework and driver transactions must be active, read-write and READ COMMITTED,
+ * with ISO dates and UTC timezone. The caller sets local positive lock timeout <= 2 seconds
+ * and statement timeout greater than lock timeout and <= 5 seconds.
  */
 interface ITelegramBotSessionRepository
 {
