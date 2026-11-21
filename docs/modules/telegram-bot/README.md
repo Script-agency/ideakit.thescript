@@ -269,6 +269,12 @@ docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=
 текущий application db, caller rollback и ленивые web/console bootstrap в отдельных процессах.
 Архитектурный gate проверяет отсутствие импортов чужих модулей в session persistence-компонентах.
 
+[Переходный PostgreSQL-набор](../../../tests/integration/modules/telegram/infrastructure/TelegramBotSessionTransitionsTest.php)
+проверяет оформление между отдельными commit/reload, сохранение завершений и очистки черновика,
+защиту нового черновика от старого подтверждения и rollback очистки. Проверки конкуренции,
+storage boundaries и DI переиспользуются из существующих наборов. Эти тесты подтверждают модель
+и хранилище сессии, но не обработку update или доставку Telegram-сообщений.
+
 [Functional-тест](../../../tests/functional/modules/telegram/WebhookCest.php) использует настоящий web config
 и fragment с test-only acceptor: проверяет HTTP gates, receipt, отсутствие побочных эффектов,
 CSRF/JWT scope и отдельные Yii-процессы для безопасных ошибок и dev bootstrap.
@@ -288,6 +294,7 @@ docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/config/TelegramAcceptanceContainerBindingsTest.php --no-colors
 
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/config/TelegramSessionContainerBindingsTest.php --no-colors
+docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/modules/telegram/infrastructure/TelegramBotSessionTransitionsTest.php --no-colors
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run integration tests/integration/modules/telegram/infrastructure --no-colors
 docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run unit tests/unit/modules/telegram --no-colors
 ```
