@@ -48,6 +48,14 @@ final class TelegramArchitectureTest extends Unit
         ));
     }
 
+    public function testKeyboardPresentationDoesNotImportInfrastructureOrYii(): void
+    {
+        self::assertSame([], $this->violations(
+            dirname(__DIR__, 4) . '/modules/telegram/presentation/keyboard',
+            ['yii\\', 'modules\\telegram\\infrastructure\\'],
+        ));
+    }
+
     /**
      * @param list<string> $prefixes
      * @param list<string> $filenames
