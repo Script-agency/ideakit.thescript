@@ -49,10 +49,84 @@ final class TelegramMessageRenderer
         ]);
     }
 
+    public function demoGreeting(): RenderedTelegramText
+    {
+        return $this->render([
+            ['text' => 'Добро пожаловать в IDEAKIT!', 'bold' => true],
+            [
+                'text' => "\n\nСейчас доступен демонстрационный режим: карточки тестовые, заявки не отправляются.\n\n"
+                    . 'Нажимайте «Следующая идея» для просмотра карточек. У карточки доступны «Детали» и «Заказать у нас».',
+            ],
+        ]);
+    }
+
+    public function demoCommentPrompt(): RenderedTelegramText
+    {
+        return $this->render([
+            ['text' => 'Демонстрационное оформление', 'bold' => true],
+            [
+                'text' => "\n\nВведите комментарий к карточке — до 2000 символов.\n\n"
+                    . 'Заявка не будет отправлена. Для отмены нажмите «Отменить».',
+            ],
+        ]);
+    }
+
+    /** @throws TelegramMessageRenderingException */
+    public function demoCommentConfirmation(string $comment): RenderedTelegramText
+    {
+        return $this->render([
+            ['text' => 'Проверьте комментарий:', 'bold' => true],
+            ['text' => "\n\n" . $comment . "\n\nЭто демонстрация: заявка не будет отправлена."],
+        ]);
+    }
+
+    public function demoOrderCompleted(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'Демонстрация завершена. Заявка не отправлена.']]);
+    }
+
+    public function orderCancelled(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'Оформление отменено.']]);
+    }
+
+    public function draftExpired(): RenderedTelegramText
+    {
+        return $this->render([
+            ['text' => 'Время хранения комментария истекло. Нажмите «Заказать у нас», чтобы начать заново.'],
+        ]);
+    }
+
+    public function browseHint(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'Используйте кнопку «Следующая идея» или кнопки под карточкой.']]);
+    }
+
+    public function finishOrderHint(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'Завершите текущее оформление или нажмите «Отменить».']]);
+    }
+
+    public function invalidComment(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'Введите непустой комментарий длиной до 2000 символов.']]);
+    }
+
+    public function cardUnavailable(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'Карточка недоступна. Нажмите «Следующая идея», чтобы продолжить просмотр.']]);
+    }
+
+    public function demoPdfUnavailable(): RenderedTelegramText
+    {
+        return $this->render([['text' => 'PDF будет доступен после запуска каталога.']]);
+    }
+
     /** @param list<array{text: string, bold?: true}> $parts */
     private function render(array $parts): RenderedTelegramText
     {
         $plainText = '';
+        // Некорректная кодировка любого фрагмента имеет приоритет перед проверкой размера.
         foreach ($parts as $part) {
             if (!mb_check_encoding($part['text'], 'UTF-8')) {
                 throw new TelegramMessageRenderingException(TelegramMessageRenderingErrorCode::INVALID_TEXT);

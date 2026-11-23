@@ -38,25 +38,32 @@ UUID и независимость повторных вызовов. Содер
 ## Формирование сообщений
 
 [TelegramMessageRenderer](../../../modules/telegram/presentation/message/TelegramMessageRenderer.php)
-принадлежит Presentation и оформляет переданные карточку и шесть разделов подробностей.
+принадлежит Presentation: оформляет переданные карточку, шесть разделов подробностей и тексты
+демонстрационного диалога. Он не выбирает карточку и не получает источник, сессию или окружение.
 [RenderedTelegramText](../../../modules/telegram/presentation/message/RenderedTelegramText.php)
 содержит только неизменяемый HTML-текст и режим `HTML`, без адресации и признака доставки.
 
 Собственная разметка ограничена `<b>` и LF. Все подстановки экранируются как обычный текст;
 буквальные HTML-сущности не декодируются. Общий контроль сначала проверяет UTF-8, затем размер
 всего видимого текста: от 1 до 4096 UTF-16-единиц. Длинное сообщение не сокращается и не делится.
+Уже принятый комментарий показывается полностью, с пробелами, переносами и эмодзи; рендерер
+не повторяет доменную нормализацию, проверку длины комментария или срока его хранения.
 
 [Типизированная ошибка](../../../modules/telegram/presentation/exception/TelegramMessageRenderingException.php)
-предоставляет [код](../../../modules/telegram/presentation/enum/TelegramMessageRenderingErrorCode.php)
-`invalid_text` или `text_too_long`, без исходного текста в собственных полях. Полный Throwable
-и его trace нельзя выводить или передавать в журнал.
+возвращает только [код](../../../modules/telegram/presentation/enum/TelegramMessageRenderingErrorCode.php)
+`invalid_text` или `text_too_long`. Исходный текст не сохраняется в собственных полях исключения;
+полный Throwable и его trace нельзя выводить или передавать в журнал. Демонстрационное подтверждение
+и завершение явно сообщают, что реальная заявка не отправлена; PDF остаётся текстовой заглушкой.
 
 [Unit-набор рендерера](../../../tests/unit/modules/telegram/presentation/message/TelegramMessageRendererTest.php)
-проверяет порядок полей, экранирование, границы размера, безопасные ошибки и совместимость с карточками.
-Он входит в описанную ниже команду запуска unit-тестов Telegram.
+проверяет шаблоны, экранирование, UTF-16-границы, полный комментарий и независимость вызовов.
+После пересборки образа в локальном тестовом окружении:
 
-На этом этапе формируются только карточка и подробности. Тексты диалога, клавиатуры, DI и отправка
-сообщений не реализованы этой частью.
+```bash
+docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run unit tests/unit/modules/telegram/presentation/message/TelegramMessageRendererTest.php --no-colors
+```
+
+Клавиатуры, DI, выбор сообщения по состоянию диалога и отправка в Telegram этим рендерером не реализованы.
 
 ## Доменная сессия
 

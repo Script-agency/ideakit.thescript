@@ -143,6 +143,110 @@ final class TelegramMessageRendererTest extends Unit
         yield 'details invalid after oversized field' => ['details', true];
     }
 
+    public function testFixedDialogueMessagesMatchTheAgreedCopy(): void
+    {
+        $renderer = new TelegramMessageRenderer();
+        $messages = [
+            [
+                $renderer->demoGreeting(),
+                "<b>Добро пожаловать в IDEAKIT!</b>\n\n"
+                . "Сейчас доступен демонстрационный режим: карточки тестовые, заявки не отправляются.\n\n"
+                . 'Нажимайте «Следующая идея» для просмотра карточек. У карточки доступны «Детали» и «Заказать у нас».',
+            ],
+            [
+                $renderer->demoCommentPrompt(),
+                "<b>Демонстрационное оформление</b>\n\n"
+                . "Введите комментарий к карточке — до 2000 символов.\n\n"
+                . 'Заявка не будет отправлена. Для отмены нажмите «Отменить».',
+            ],
+            [$renderer->demoOrderCompleted(), 'Демонстрация завершена. Заявка не отправлена.'],
+            [$renderer->orderCancelled(), 'Оформление отменено.'],
+            [
+                $renderer->draftExpired(),
+                'Время хранения комментария истекло. Нажмите «Заказать у нас», чтобы начать заново.',
+            ],
+            [$renderer->browseHint(), 'Используйте кнопку «Следующая идея» или кнопки под карточкой.'],
+            [$renderer->finishOrderHint(), 'Завершите текущее оформление или нажмите «Отменить».'],
+            [$renderer->invalidComment(), 'Введите непустой комментарий длиной до 2000 символов.'],
+            [$renderer->cardUnavailable(), 'Карточка недоступна. Нажмите «Следующая идея», чтобы продолжить просмотр.'],
+            [$renderer->demoPdfUnavailable(), 'PDF будет доступен после запуска каталога.'],
+        ];
+
+        foreach ($messages as [$result, $expected]) {
+            self::assertSame($expected, $result->text());
+            self::assertSame('HTML', $result->parseMode());
+        }
+    }
+
+    /** @dataProvider commentCases */
+    public function testCommentRemainsCompleteWithWhitespaceUnicodeAndLiteralEntities(string $comment, string $escaped): void
+    {
+        $result = (new TelegramMessageRenderer())->demoCommentConfirmation($comment);
+
+        self::assertSame(
+            "<b>Проверьте комментарий:</b>\n\n" . $escaped
+            . "\n\nЭто демонстрация: заявка не будет отправлена.",
+            $result->text(),
+        );
+        self::assertSame('HTML', $result->parseMode());
+        if ($comment === str_repeat('&', 2000)) {
+            self::assertGreaterThan(4096, strlen($result->text()));
+        }
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function commentCases(): iterable
+    {
+        yield '2000 non BMP characters fit with 71 fixed units' => [str_repeat('😀', 2000), str_repeat('😀', 2000)];
+        yield '2000 ampersands are measured before escaping' => [str_repeat('&', 2000), str_repeat('&amp;', 2000)];
+        yield 'whitespace and literal entities' => [
+            "  Комментарий 😀\n\t<b>текст</b> &lt;b&gt; &amp; &#039; ' \"  \n ",
+            "  Комментарий 😀\n\t&lt;b&gt;текст&lt;/b&gt; &amp;lt;b&amp;gt; &amp;amp; &amp;#039; &#039; &quot;  \n ",
+        ];
+    }
+
+    public function testCommentUsesTheSameSafeTechnicalFailures(): void
+    {
+        $renderer = new TelegramMessageRenderer();
+        $this->assertRenderingFailure(
+            fn (): RenderedTelegramText => $renderer->demoCommentConfirmation(str_repeat('😀', 2013)),
+            TelegramMessageRenderingErrorCode::TEXT_TOO_LONG,
+        );
+        $this->assertRenderingFailure(
+            fn (): RenderedTelegramText => $renderer->demoCommentConfirmation(str_repeat('😀', 2013) . "\xC3"),
+            TelegramMessageRenderingErrorCode::INVALID_TEXT,
+        );
+    }
+
+    public function testInterleavedCallsDoNotChangeResultsOrInputs(): void
+    {
+        $renderer = new TelegramMessageRenderer();
+        $card = $this->ideaCard('Краткое описание');
+        $cardSnapshot = clone $card;
+        $first = $renderer->card($card);
+        $firstText = $first->text();
+        $comment = "  Первый комментарий 😀\n ";
+        $confirmation = $renderer->demoCommentConfirmation($comment);
+        $confirmationText = $confirmation->text();
+
+        $renderer->card($this->ideaCard('Другая карточка', 'Другой заголовок'));
+        $renderer->details($this->ideaDetails('Подробности другой карточки'));
+        $renderer->demoCommentConfirmation('Другой комментарий');
+        $renderer->demoGreeting();
+        $this->assertRenderingFailure(
+            fn (): RenderedTelegramText => $renderer->card($this->ideaCard("\xFF")),
+            TelegramMessageRenderingErrorCode::INVALID_TEXT,
+        );
+
+        self::assertSame($firstText, $first->text());
+        self::assertSame($firstText, $renderer->card($card)->text());
+        self::assertSame($confirmationText, $confirmation->text());
+        self::assertSame($confirmationText, $renderer->demoCommentConfirmation($comment)->text());
+        self::assertSame($firstText, (new TelegramMessageRenderer())->card($card)->text());
+        self::assertEquals($cardSnapshot, $card);
+        self::assertSame("  Первый комментарий 😀\n ", $comment);
+    }
+
     private function ideaCard(string $summary, string $title = 'З', string $monetization = 'М'): IdeaCardView
     {
         return new IdeaCardView('synthetic-id', $title, 'П', 'А', $monetization, $summary);
