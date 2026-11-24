@@ -548,3 +548,6 @@ $container->setSingleton(JwtMiddleware::class, function () use ($container) {
         $container->get(IUserRepository::class),
     );
 });
+
+$configureTelegramContent = require __DIR__ . '/telegram_content.php';
+$configureTelegramContent($container);

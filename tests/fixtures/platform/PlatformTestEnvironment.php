@@ -80,6 +80,7 @@ final class PlatformTestEnvironment
     {
         return array_merge(self::runtimeDefaults(), [
             'APP_NAME' => 'IDEAKIT', 'APP_ENV' => 'test', 'APP_DEBUG' => 'false',
+            'TELEGRAM_CONTENT_MODE' => 'demo',
             'ADMIN_EMAIL' => 'admin@example.test', 'SENDER_EMAIL' => 'no-reply@example.test', 'SENDER_NAME' => 'IDEAKIT',
             'DB_DSN' => 'pgsql:host=127.0.0.1;port=1;dbname=ideakit_test',
             'DB_USERNAME' => 'synthetic', 'DB_PASSWORD' => 'synthetic-test-only',

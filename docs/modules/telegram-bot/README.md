@@ -9,6 +9,139 @@
 PostgreSQL mapper и репозиторий с ленивым web/console DI. Подключение сессии к обработке обновлений,
 production-обработка и отправка сообщений ещё не реализованы.
 
+## Контракт содержимого карточек
+
+[IIdeaContentProvider](../../../modules/telegram/application/port/IIdeaContentProvider.php)
+определяет чтение первой карточки, карточки и подробностей по идентификатору, а также следующей
+карточки относительно текущей. Отсутствие результата обозначается `null`; неизвестный
+идентификатор не заменяется первой карточкой.
+
+Неизменяемые [IdeaCardView](../../../modules/telegram/application/dto/IdeaCardView.php) и
+[IdeaDetailsView](../../../modules/telegram/application/dto/IdeaDetailsView.php) содержат обычный
+текст без Telegram-разметки, клавиатур и типов хранения. Подробности включают карточку и шесть
+именованных разделов. Контракт не меняет состояние диалога и не определяет персональную выдачу
+настоящего каталога.
+
+[ConfiguredDemoIdeaProvider](../../../modules/telegram/infrastructure/content/ConfiguredDemoIdeaProvider.php)
+предоставляет три записи: «Тестовая карточка 1», «Тестовая карточка 2» и «Тестовая карточка 3».
+Их UUID заданы в коде и не меняются между запусками. Следующая карточка определяется по переданному
+UUID: `1 → 2 → 3 → 1`. Источник не хранит положение пользователя, не меняет сессию и не обращается
+к БД, брокеру или Telegram API.
+
+Четыре [unit-теста](../../../tests/unit/modules/telegram/infrastructure/content/ConfiguredDemoIdeaProviderTest.php)
+проверяют цикл, согласованность карточек и подробностей, отсутствие подстановки при неизвестном
+UUID и независимость повторных вызовов. Содержимое синтетическое и не является реальным каталогом.
+
+Источник подключён через общий DI в режиме `demo`. Клавиатуры формируются отдельными компонентами
+Presentation; отправка сообщений и персональная выдача настоящего каталога не реализованы.
+
+## Формирование сообщений
+
+[TelegramMessageRenderer](../../../modules/telegram/presentation/message/TelegramMessageRenderer.php)
+принадлежит Presentation: оформляет переданные карточку, шесть разделов подробностей и тексты
+демонстрационного диалога. Он не выбирает карточку и не получает источник, сессию или окружение.
+[RenderedTelegramText](../../../modules/telegram/presentation/message/RenderedTelegramText.php)
+содержит только неизменяемый HTML-текст и режим `HTML`, без адресации и признака доставки.
+
+Собственная разметка ограничена `<b>` и LF. Все подстановки экранируются как обычный текст;
+буквальные HTML-сущности не декодируются. Общий контроль сначала проверяет UTF-8, затем размер
+всего видимого текста: от 1 до 4096 UTF-16-единиц. Длинное сообщение не сокращается и не делится.
+Уже принятый комментарий показывается полностью, с пробелами, переносами и эмодзи; рендерер
+не повторяет доменную нормализацию, проверку длины комментария или срока его хранения.
+
+[Типизированная ошибка](../../../modules/telegram/presentation/exception/TelegramMessageRenderingException.php)
+возвращает только [код](../../../modules/telegram/presentation/enum/TelegramMessageRenderingErrorCode.php)
+`invalid_text` или `text_too_long`. Исходный текст не сохраняется в собственных полях исключения;
+полный Throwable и его trace нельзя выводить или передавать в журнал. Демонстрационное подтверждение
+и завершение явно сообщают, что реальная заявка не отправлена; PDF остаётся текстовой заглушкой.
+
+[Unit-набор рендерера](../../../tests/unit/modules/telegram/presentation/message/TelegramMessageRendererTest.php)
+проверяет шаблоны, экранирование, UTF-16-границы, полный комментарий и независимость вызовов.
+После пересборки образа в локальном тестовом окружении:
+
+```bash
+docker compose run --rm --no-deps -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e 'TEST_DB_DSN=pgsql:host=postgres;port=5432;dbname=ideakit_test' -e DB_USERNAME=ideakit -e TEST_DB_USERNAME=ideakit -e DB_PASSWORD=local-development-only -e TEST_DB_PASSWORD=local-development-only php-fpm vendor/bin/codecept run unit tests/unit/modules/telegram/presentation/message/TelegramMessageRendererTest.php --no-colors
+```
+
+Клавиатуры формируются отдельно; выбор сообщения по состоянию диалога и отправка в Telegram не реализованы.
+
+## Клавиатуры
+
+[TelegramKeyboardFactory](../../../modules/telegram/presentation/keyboard/TelegramKeyboardFactory.php)
+формирует две reply-клавиатуры и три inline-клавиатуры. При просмотре reply-кнопка —
+«Следующая идея», при вводе и подтверждении комментария — «Отменить». У карточки находятся
+«Детали» и «Заказать у нас», у подробностей — «Получить PDF» и «Заказать у нас»,
+у подтверждения — «Подтвердить» и «Отменить».
+
+[TelegramReplyKeyboard](../../../modules/telegram/presentation/keyboard/TelegramReplyKeyboard.php)
+и [TelegramInlineKeyboard](../../../modules/telegram/presentation/keyboard/TelegramInlineKeyboard.php)
+неизменяемы. Их `toArray()` возвращает содержимое `reply_markup`, без обёртки и JSON-кодирования.
+Текст сообщения остаётся отдельным результатом рендерера.
+
+Внутренний [ITelegramCallbackEncoder](../../../modules/telegram/application/port/ITelegramCallbackEncoder.php)
+не содержит инфраструктурных типов. [Адаптер](../../../modules/telegram/infrastructure/transport/callback/CodecTelegramCallbackEncoder.php)
+использует существующий codec версии `1`: `d/o/p` привязаны к UUID переданной карточки,
+`c/x` — к переданной ревизии взаимодействия. Контекст подписи — ключ бота и UUID Telegram-профиля.
+Готовые callback не превышают 64 байта; ошибка подписания не возвращает частичную клавиатуру.
+
+[Unit-набор](../../../tests/unit/modules/telegram/presentation/keyboard/TelegramKeyboardFactoryTest.php)
+проверяет раскладки, предметы действий, контекст последовательных вызовов и безопасный отказ
+через существующий codec. Его криптографические проверки не дублируются.
+
+Клавиатуры и подпись подключены через общий DI. Обработка нажатий, проверка актуальности ревизии,
+смена состояния сессии, отправка и ответ на callback остаются отдельными этапами.
+
+## Режим содержимого и подключение компонентов
+
+`TELEGRAM_CONTENT_MODE` обязателен при загрузке общей конфигурации.
+
+| Значение | Поведение |
+|---|---|
+| `demo` | Используются три синтетические карточки |
+| `catalog` | Запуск отклоняется: реализация каталога ещё не подключена |
+| Отсутствующее или иное | Запуск отклоняется как неверная конфигурация |
+
+Значения проверяются без изменения регистра, удаления пробелов и подстановки другого режима.
+Присутствующий ключ в `$_ENV` имеет приоритет перед окружением процесса, включая явные `null`
+и пустую строку. Проверка режима выполняется сразу, до получения источника из контейнера.
+
+[config/container.php](../../../config/container.php) подключает общий
+[config/telegram_content.php](../../../config/telegram_content.php) для web, console
+и общей test-конфигурации. Проверенный `TelegramContentConfig` и компоненты без пользовательского
+состояния создаются по одному экземпляру в пределах текущего контейнера.
+
+| Зависимость | Реализация |
+|---|---|
+| `IIdeaContentProvider` | `ConfiguredDemoIdeaProvider` |
+| `TelegramMessageRenderer` | Рендерер подготовленных сообщений |
+| `CallbackSigningKeys` | Ленивое чтение и проверка ключей |
+| `TelegramCallbackCodec` | Существующий подписанный callback |
+| `ITelegramCallbackEncoder` | `CodecTelegramCallbackEncoder` |
+| `TelegramKeyboardFactory` | Фабрика клавиатур |
+
+Для подписи требуется `TELEGRAM_CALLBACK_CURRENT_KEY`: канонический стандартный Base64
+ключа минимум из 32 байт. `TELEGRAM_CALLBACK_PREVIOUS_KEY` необязателен; при отсутствии,
+`null` или точной пустой строке предыдущий ключ не используется. Длину, кодирование и различие
+ключей проверяет существующий `CallbackSigningKeys`. Значения не берутся из webhook secret
+и не генерируются приложением автоматически.
+
+Общая загрузка приложения, получение источника карточек и рендерера не требуют этих ключей.
+Получение ключей, codec, encoder или фабрики клавиатур уже требует корректной конфигурации подписи.
+Новые кнопки подписывает текущий ключ, проверка принимает текущий и предыдущий.
+Для применения новых ключей к созданным объектам нужен новый контейнер или перезапуск процесса.
+
+Ошибки содержат только безопасные причины: `telegram_content_mode_invalid`,
+`telegram_catalog_unavailable`, `invalid_callback_key_config`. Полные исключения,
+окружение, ключи и callback нельзя выводить в диагностику.
+
+Подключение и создание компонентов не открывают внешние соединения и не меняют пользователя,
+сессию или inbox/outbox. UUID профиля, ключ бота и ревизия передаются явно в существующие методы.
+`/health/ready` проверяет ping PHP-FPM, а не допустимость режима или готовность подписи.
+Сборка компонентов проверяется тестами конфигурации.
+
+Реального каталога, обработки нажатий и исходящей отправки здесь ещё нет.
+Подключение через DI не означает готовность пользовательского сценария.
+
 ## Доменная сессия
 
 [TelegramBotSession](../../../modules/telegram/domain/entity/TelegramBotSession.php) принадлежит Telegram
@@ -180,8 +313,8 @@ reply-кнопок `Следующая идея` и `Отменить` либо 
 после удаления предыдущего ключа старые кнопки становятся недействительными.
 
 Проверенная подпись подтверждает только целостность кнопки, но не право выполнить действие.
-Получение доверенного профиля, подключение codec к конфигурации приложения, проверки сессии и
-бизнес-доступа и ответ на callback остаются для следующих срезов.
+Codec подключён к общей конфигурации приложения. Получение доверенного профиля, проверки сессии
+и бизнес-доступа и ответ на callback остаются для следующих срезов.
 
 ## Владение данными
 
@@ -243,6 +376,22 @@ docker compose exec -T -e APP_ENV=test -e APP_DEBUG=false -e 'DB_DSN=pgsql:host=
 не используйте `fresh` или общий откат для рабочей базы.
 
 ## Проверки
+
+Перед контейнерными командами задайте `TELEGRAM_CONTENT_MODE=demo` в окружении текущей оболочки:
+Bash — `export TELEGRAM_CONTENT_MODE=demo`, PowerShell — `$env:TELEGRAM_CONTENT_MODE = 'demo'`.
+Compose передаёт настройку в PHP-контейнер без скрытого значения по умолчанию.
+
+После пересборки образа в [явном тестовом окружении Platform](../platform/README.md#явное-тестовое-окружение)
+с проверенными `ideakit_test` и `ideakit_transport_test` выполните:
+
+```bash
+vendor/bin/codecept run unit tests/unit/modules/telegram/infrastructure/config/TelegramContentConfigTest.php --no-colors
+vendor/bin/codecept run integration tests/integration/config/TelegramContentContainerBindingsTest.php --no-colors
+```
+
+Это команды внутри PHP-контейнера с явно переданным тестовым окружением. Первый набор проверяет
+строгий разбор режима; второй — настоящую web/console-сборку без внешнего I/O, ленивую подпись,
+подключение текущего и предыдущего ключей и безопасные отказы конфигурации.
 
 [Domain-тесты](../../../tests/unit/modules/telegram/domain) проверяют создание, восстановление,
 переходы, отказы, границы TTL и ревизии. [Архитектурный тест](../../../tests/unit/modules/telegram/TelegramArchitectureTest.php)
