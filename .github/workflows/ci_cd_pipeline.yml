@@ -102,6 +102,7 @@ jobs:
       (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'dev'))
     env:
       APP_ENV: test
+      TELEGRAM_CONTENT_MODE: demo
       APP_DEBUG: 'false'
       APP_NAME: IDEAKIT
       ADMIN_EMAIL: admin@example.test

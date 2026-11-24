@@ -15,6 +15,7 @@ $mode = $argv[3];
 $runtime = $argv[4];
 $_ENV = [
     'APP_NAME' => 'Webhook test', 'APP_ENV' => YII_ENV,
+    'TELEGRAM_CONTENT_MODE' => 'demo',
     'APP_DEBUG' => YII_DEBUG ? 'true' : 'false', 'DEBUG_LVL' => '3',
     'ADMIN_EMAIL' => 'admin@example.test', 'SENDER_EMAIL' => 'sender@example.test',
     'SENDER_NAME' => 'Synthetic', 'COOKIE_VALIDATION_KEY' => 'synthetic-cookie-key',

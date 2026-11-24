@@ -21,6 +21,9 @@ services:
       MAILER_ENCRYPTION: ""
       SENDER_EMAIL: no-reply@example.test
       SENDER_NAME: IDEAKIT
+      TELEGRAM_CONTENT_MODE: "${TELEGRAM_CONTENT_MODE-}"
+      TELEGRAM_CALLBACK_CURRENT_KEY: "${TELEGRAM_CALLBACK_CURRENT_KEY-}"
+      TELEGRAM_CALLBACK_PREVIOUS_KEY: "${TELEGRAM_CALLBACK_PREVIOUS_KEY-}"
       DB_DSN: pgsql:host=postgres;port=5432;dbname=${POSTGRES_DB:-ideakit}
       DB_USERNAME: ${POSTGRES_USER:-ideakit}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
